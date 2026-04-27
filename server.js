@@ -1,48 +1,171 @@
-const express = require('express');
-const cors = require('cors');
+const express = require("express");
+const cors = require("cors");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-let usuarios = [];
+const MONGO_URL = process.env.MONGO_URL;
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "admin123";
 
-// cadastro
-app.post('/register', (req, res) => {
-  const { email, senha } = req.body;
-  usuarios.push({ email, senha, saldo: 0 });
-  res.json({ msg: 'Usuário criado' });
+mongoose
+  .connect(MONGO_URL)
+  .then(() => console.log("MongoDB conectado"))
+  .catch((err) => console.error("Erro MongoDB:", err));
+
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  senha: { type: String, required: true },
+  saldo: { type: Number, default: 0 },
+  plano: { type: String, default: "Nenhum" }
 });
 
-// login
-app.post('/login', (req, res) => {
-  const { email, senha } = req.body;
-  const user = usuarios.find(u => u.email === email && u.senha === senha);
+const User = mongoose.model("User", UserSchema);
 
-  if (!user) return res.status(401).json({ msg: 'Erro login' });
-
-  res.json({ msg: 'Logado', saldo: user.saldo });
+app.get("/", (req, res) => {
+  res.send("Backend rodando com MongoDB 🚀");
 });
 
-// adicionar saldo
-app.post('/add-saldo', (req, res) => {
-  const { email, valor } = req.body;
-  const user = usuarios.find(u => u.email === email);
+app.post("/register", async (req, res) => {
+  try {
+    const { email, senha } = req.body;
 
-  if (!user) return res.status(404).json({ msg: 'Usuário não encontrado' });
+    const existe = await User.findOne({ email });
 
-  user.saldo += valor;
-  res.json({ saldo: user.saldo });
+    if (existe) {
+      return res.status(400).json({
+        msg: "Esse email já está cadastrado"
+      });
+    }
+
+    const senhaHash = await bcrypt.hash(senha, 10);
+
+    const user = await User.create({
+      email,
+      senha: senhaHash,
+      saldo: 0,
+      plano: "Nenhum"
+    });
+
+    res.json({
+      msg: "Usuário criado",
+      email: user.email,
+      saldo: user.saldo,
+      plano: user.plano
+    });
+  } catch (err) {
+    res.status(500).json({
+      msg: "Erro ao cadastrar",
+      erro: err.message
+    });
+  }
 });
 
-// teste (pra garantir que atualizou)
-app.get('/teste', (req, res) => {
-  res.json({ ok: true });
+app.post("/login", async (req, res) => {
+  try {
+    const { email, senha } = req.body;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(401).json({
+        msg: "Email ou senha incorretos"
+      });
+    }
+
+    const senhaOk = await bcrypt.compare(senha, user.senha);
+
+    if (!senhaOk) {
+      return res.status(401).json({
+        msg: "Email ou senha incorretos"
+      });
+    }
+
+    res.json({
+      msg: "Logado",
+      email: user.email,
+      saldo: user.saldo,
+      plano: user.plano
+    });
+  } catch (err) {
+    res.status(500).json({
+      msg: "Erro ao logar",
+      erro: err.message
+    });
+  }
 });
 
-app.get('/', (req, res) => {
-  res.send('Backend rodando 🚀');
+app.post("/admin/add-saldo", async (req, res) => {
+  try {
+    const { adminSecret, email, valor, plano } = req.body;
+
+    if (adminSecret !== ADMIN_SECRET) {
+      return res.status(403).json({
+        msg: "Acesso negado"
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        msg: "Usuário não encontrado"
+      });
+    }
+
+    user.saldo += Number(valor);
+
+    if (plano) {
+      user.plano = plano;
+    }
+
+    await user.save();
+
+    res.json({
+      msg: "Saldo atualizado",
+      email: user.email,
+      saldo: user.saldo,
+      plano: user.plano
+    });
+  } catch (err) {
+    res.status(500).json({
+      msg: "Erro ao adicionar saldo",
+      erro: err.message
+    });
+  }
 });
 
-app.listen(3000, () => console.log('Rodando'));
+app.get("/admin/users", async (req, res) => {
+  try {
+    const { adminSecret } = req.query;
+
+    if (adminSecret !== ADMIN_SECRET) {
+      return res.status(403).json({
+        msg: "Acesso negado"
+      });
+    }
+
+    const users = await User.find().select("-senha");
+
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({
+      msg: "Erro ao buscar usuários",
+      erro: err.message
+    });
+  }
+});
+
+app.get("/teste", (req, res) => {
+  res.json({
+    ok: true,
+    mongo: !!MONGO_URL
+  });
+});
+
+app.listen(3000, () => {
+  console.log("Rodando");
+});
